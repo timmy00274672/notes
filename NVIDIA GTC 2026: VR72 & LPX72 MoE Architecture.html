@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NVIDIA GTC 2026 | Multi-LPX MoE Disaggregated Architecture</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #020202;
+            color: #e5e7eb;
+            overflow-x: hidden;
+        }
+
+        .nvidia-green { color: #76b900; }
+        .bg-nvidia { background-color: #76b900; }
+        
+        .rack-card {
+            background: rgba(15, 15, 15, 0.9);
+            border: 1px solid #333;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .active-gpu { border-color: #76b900; box-shadow: 0 0 30px rgba(118, 185, 0, 0.2); }
+        .active-lpu { border-color: #3b82f6; box-shadow: 0 0 30px rgba(59, 130, 246, 0.2); }
+
+        .pulse { animation: pulse-animation 1.5s infinite; }
+        @keyframes pulse-animation {
+            0% { transform: scale(1); filter: brightness(1); }
+            50% { transform: scale(1.02); filter: brightness(1.3); }
+            100% { transform: scale(1); filter: brightness(1); }
+        }
+
+        .data-particle {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            position: absolute;
+            z-index: 100;
+            display: none;
+            box-shadow: 0 0 15px currentColor;
+        }
+
+        /* 網格背景 */
+        .grid-bg {
+            background-image: linear-gradient(rgba(118, 185, 0, 0.05) 1px, transparent 1px),
+                              linear-gradient(90deg, rgba(118, 185, 0, 0.05) 1px, transparent 1px);
+            background-size: 50px 50px;
+        }
+
+        #status-stream::-webkit-scrollbar { width: 4px; }
+        #status-stream::-webkit-scrollbar-thumb { background: #333; }
+    </style>
+</head>
+<body class="grid-bg min-h-screen">
+
+    <div class="p-4 md:p-8 max-w-7xl mx-auto">
+        <!-- Header -->
+        <header class="mb-8 flex flex-col md:flex-row justify-between items-start md:items-end border-b border-gray-800 pb-6">
+            <div>
+                <h1 class="text-3xl md:text-5xl font-extrabold tracking-tighter">
+                    Vera Rubin <span class="nvidia-green">POD 2026</span>
+                </h1>
+                <p class="text-gray-500 mt-2 font-mono uppercase text-sm tracking-widest">
+                    Disaggregated MoE (Mixture of Experts) Architecture
+                </p>
+            </div>
+            <div class="mt-4 md:mt-0 space-y-1">
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 bg-nvidia rounded-full animate-pulse"></span>
+                    <span class="text-xs font-mono text-gray-400">Spectrum-X800 Fabric: <span class="text-white">Active</span></span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 bg-blue-500 rounded-full"></span>
+                    <span class="text-xs font-mono text-gray-400">CX-9 Interface: <span class="text-white">RDMA Ready</span></span>
+                </div>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            <!-- Left: VR72 (The Orchestrator) -->
+            <div class="lg:col-span-4 space-y-6">
+                <div id="vr72" class="rack-card rounded-3xl p-6 relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-3 bg-gray-800 text-[10px] font-bold">ATTN & ROUTER</div>
+                    <h2 class="text-xl font-bold mb-4">VR72 Compute Tray</h2>
+                    
+                    <div class="space-y-4">
+                        <div class="bg-black/40 p-3 rounded-xl border border-white/5">
+                            <div class="flex justify-between text-[10px] text-gray-500 mb-1 uppercase">HBM4 Capacity</div>
+                            <div class="w-full bg-gray-900 h-2 rounded-full overflow-hidden">
+                                <div id="hbm-bar" class="bg-nvidia h-full w-0 transition-all duration-500"></div>
+                            </div>
+                            <div class="mt-1 text-[10px] text-right font-mono italic">KV Cache Store</div>
+                        </div>
+
+                        <div id="gpu-engine" class="bg-gray-900/50 p-4 rounded-xl border border-nvidia/20 text-center">
+                            <div class="text-[10px] text-gray-500 uppercase mb-2">Rubin Core Activity</div>
+                            <div id="gpu-task" class="text-sm font-mono text-white tracking-tight">IDLE</div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <div class="bg-black/40 p-2 rounded-lg border border-white/5 text-center">
+                                <div class="text-[8px] text-gray-500 uppercase">Attention</div>
+                                <div id="attn-led" class="w-2 h-2 rounded-full bg-gray-700 mx-auto mt-1"></div>
+                            </div>
+                            <div class="bg-black/40 p-2 rounded-lg border border-white/5 text-center">
+                                <div class="text-[8px] text-gray-500 uppercase">Aggregator</div>
+                                <div id="agg-led" class="w-2 h-2 rounded-full bg-gray-700 mx-auto mt-1"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Status Log -->
+                <div class="rack-card rounded-2xl p-4 h-[200px] flex flex-col">
+                    <div class="text-[10px] text-gray-600 font-bold mb-2 uppercase">Real-time Telemetry</div>
+                    <div id="status-stream" class="flex-1 overflow-y-auto font-mono text-[11px] space-y-1 text-gray-400">
+                        <div>> System initialized.</div>
+                        <div>> Ready for inference request.</div>
+                    </div>
+                </div>
+                
+                <button id="startBtn" class="w-full bg-white hover:bg-nvidia hover:text-black text-black font-black py-4 rounded-xl transition-all uppercase tracking-widest text-sm">
+                    發送推論請求 (Launch MoE Loop)
+                </button>
+            </div>
+
+            <!-- Center: Network Fabric -->
+            <div class="lg:col-span-1 flex flex-col items-center justify-center">
+                <div class="h-full w-1 bg-gradient-to-b from-transparent via-gray-700 to-transparent relative">
+                    <div class="absolute inset-0 flex flex-col justify-around py-20">
+                        <div class="w-4 h-4 -ml-1.5 bg-gray-800 border border-gray-600 rounded-sm rotate-45"></div>
+                        <div class="w-4 h-4 -ml-1.5 bg-gray-800 border border-gray-600 rounded-sm rotate-45"></div>
+                        <div class="w-4 h-4 -ml-1.5 bg-gray-800 border border-gray-600 rounded-sm rotate-45"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: LPX72 Trays (The Experts) -->
+            <div class="lg:col-span-7 grid grid-cols-1 md:grid-cols-1 gap-4">
+                
+                <!-- LPX Tray 1 -->
+                <div id="lpx-1" class="rack-card rounded-2xl p-4 flex items-center gap-6 relative">
+                    <div class="w-20 text-center">
+                        <div class="text-blue-500 font-black text-lg">LPX #1</div>
+                        <div class="text-[8px] text-gray-500">EXPERTS 01-32</div>
+                    </div>
+                    <div class="flex-1 grid grid-cols-4 gap-2">
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_1</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_2</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_3</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_4</div>
+                    </div>
+                    <div class="w-24 bg-black/50 p-2 rounded text-[9px] font-mono">
+                        <div class="text-gray-600">SRAM BW</div>
+                        <div class="text-blue-400">40 PB/s</div>
+                    </div>
+                </div>
+
+                <!-- LPX Tray 2 -->
+                <div id="lpx-2" class="rack-card rounded-2xl p-4 flex items-center gap-6 relative">
+                    <div class="w-20 text-center">
+                        <div class="text-blue-500 font-black text-lg">LPX #2</div>
+                        <div class="text-[8px] text-gray-500">EXPERTS 33-64</div>
+                    </div>
+                    <div class="flex-1 grid grid-cols-4 gap-2">
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_5</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_6</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_7</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_8</div>
+                    </div>
+                    <div class="w-24 bg-black/50 p-2 rounded text-[9px] font-mono">
+                        <div class="text-gray-600">SRAM BW</div>
+                        <div class="text-blue-400">40 PB/s</div>
+                    </div>
+                </div>
+
+                <!-- LPX Tray 3 -->
+                <div id="lpx-3" class="rack-card rounded-2xl p-4 flex items-center gap-6 relative">
+                    <div class="w-20 text-center">
+                        <div class="text-blue-500 font-black text-lg">LPX #3</div>
+                        <div class="text-[8px] text-gray-500">EXPERTS 65-96</div>
+                    </div>
+                    <div class="flex-1 grid grid-cols-4 gap-2">
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_9</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_10</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_11</div>
+                        <div class="h-10 bg-blue-900/20 border border-blue-500/30 rounded flex items-center justify-center text-[10px]">FFN_12</div>
+                    </div>
+                    <div class="w-24 bg-black/50 p-2 rounded text-[9px] font-mono">
+                        <div class="text-gray-600">SRAM BW</div>
+                        <div class="text-blue-400">40 PB/s</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Particles for Animation -->
+        <div id="p-pool"></div>
+
+        <!-- Footer Explainer -->
+        <div class="mt-12 grid grid-cols-1 md:grid-cols-2 gap-12 border-t border-gray-800 pt-8">
+            <div>
+                <h3 class="text-lg font-bold mb-2">解構式 MoE 資料流：</h3>
+                <ol class="text-sm text-gray-400 space-y-2 list-decimal list-inside">
+                    <li><span class="text-white">VR72 Attention</span>: GPU 掃描 HBM4 記憶體，完成對上下文的理解。</li>
+                    <li><span class="text-white">Top-K Routing</span>: GPU 擔任調度員，決定這個 Token 要交給哪兩個 LPX 專家（例如專家 #3 與 #91）。</li>
+                    <li><span class="text-white">Activations Dispatch</span>: 透過 Spectrum-X 網狀拓撲，將計算中的向量分發到指定的 LPX 機櫃。</li>
+                    <li><span class="text-white">Weighted Aggregation</span>: 多個 LPX 回傳計算結果，GPU 將這些「專家的建議」進行加權加總，完成這一層的計算。</li>
+                </ol>
+            </div>
+            <div class="bg-nvidia/5 p-6 rounded-2xl border border-nvidia/20 flex flex-col justify-center">
+                <div class="text-nvidia font-bold text-xl mb-2 italic">Validation Insight:</div>
+                <p class="text-sm text-gray-300">
+                    在 2026 年的 POD 中，<span class="text-white">All-to-All 的延遲抖動</span> 是頭號敵人。如果 LPX #3 的網路擁塞，即便其他專家算完了，GPU 也必須等它回來才能進行加權加總，這就是所謂的「拖油瓶效應 (Straggler Effect)」。
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const statusStream = document.getElementById('status-stream');
+        const hbmBar = document.getElementById('hbm-bar');
+        const gpuEngine = document.getElementById('gpu-engine');
+        const gpuTask = document.getElementById('gpu-task');
+        const attnLed = document.getElementById('attn-led');
+        const aggLed = document.getElementById('agg-led');
+        const vr72 = document.getElementById('vr72');
+
+        const lpxs = [
+            document.getElementById('lpx-1'),
+            document.getElementById('lpx-2'),
+            document.getElementById('lpx-3')
+        ];
+
+        let isRunning = false;
+
+        function log(msg, type = 'info') {
+            const div = document.createElement('div');
+            const color = type === 'error' ? 'text-red-500' : (type === 'success' ? 'text-nvidia' : 'text-gray-400');
+            div.className = color;
+            div.innerText = `> ${msg}`;
+            statusStream.prepend(div);
+        }
+
+        async function loop() {
+            if (isRunning) return;
+            isRunning = true;
+            startBtn.disabled = true;
+
+            log("推論請求開始...", "success");
+            
+            // Step 1: Attention
+            vr72.classList.add('active-gpu');
+            gpuTask.innerText = "ATTENTION (SCAN HBM4)";
+            hbmBar.style.width = "100%";
+            attnLed.classList.add('bg-nvidia');
+            await delay(1000);
+            attnLed.classList.remove('bg-nvidia');
+
+            // Step 2: Routing
+            gpuTask.innerText = "TOP-K ROUTING...";
+            log("計算專家路由 (Routing to LPX #1 & #3)");
+            await delay(500);
+
+            // Step 3: Dispatch (Animation)
+            gpuTask.innerText = "DISPATCHING ACTIVATIONS";
+            const targets = [0, 2]; // Target LPX #1 and #3
+            const p1 = moveParticle('vr72', 'lpx-1', '#76b900');
+            const p2 = moveParticle('vr72', 'lpx-3', '#76b900');
+            await Promise.all([p1, p2]);
+
+            // Step 4: Expert Compute
+            lpxs[0].classList.add('active-lpu', 'pulse');
+            lpxs[2].classList.add('active-lpu', 'pulse');
+            log("LPX 專家正在計算 FFN 層...", "info");
+            await delay(1200);
+            lpxs[0].classList.remove('pulse');
+            lpxs[2].classList.remove('pulse');
+
+            // Step 5: Return (Weighted Sum)
+            log("專家計算完畢，回傳加權結果 (Weighted Results)...");
+            const r1 = moveParticle('lpx-1', 'vr72', '#3b82f6');
+            const r2 = moveParticle('lpx-3', 'vr72', '#3b82f6');
+            await Promise.all([r1, r2]);
+
+            // Step 6: Aggregate
+            lpxs[0].classList.remove('active-lpu');
+            lpxs[2].classList.remove('active-lpu');
+            aggLed.classList.add('bg-nvidia');
+            gpuTask.innerText = "WEIGHTED AGGREGATION";
+            log("GPU 執行向量加總 (Aggregation Completed)", "success");
+            await delay(800);
+            aggLed.classList.remove('bg-nvidia');
+
+            // Cleanup
+            gpuTask.innerText = "IDLE";
+            hbmBar.style.width = "0%";
+            vr72.classList.remove('active-gpu');
+            startBtn.disabled = false;
+            isRunning = false;
+            log("單層循環結束。");
+        }
+
+        function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+        function moveParticle(fromId, toId, color) {
+            return new Promise(resolve => {
+                const fromEl = document.getElementById(fromId);
+                const toEl = document.getElementById(toId);
+                const fromRect = fromEl.getBoundingClientRect();
+                const toRect = toEl.getBoundingClientRect();
+
+                const p = document.createElement('div');
+                p.className = 'data-particle';
+                p.style.color = color;
+                p.style.backgroundColor = color;
+                document.getElementById('p-pool').appendChild(p);
+
+                let startX, startY, endX, endY;
+
+                if (fromId === 'vr72') {
+                    startX = fromRect.right;
+                    startY = fromRect.top + (fromRect.height / 2);
+                    endX = toRect.left;
+                    endY = toRect.top + (toRect.height / 2);
+                } else {
+                    startX = fromRect.left;
+                    startY = fromRect.top + (fromRect.height / 2);
+                    endX = toRect.left + 50; // Return to the center/left of VR72
+                    endY = toRect.top + (toRect.height / 2);
+                    // Adjust end position to VR72 center
+                    const vrRect = vr72.getBoundingClientRect();
+                    endX = vrRect.right;
+                    endY = vrRect.top + (vrRect.height / 2);
+                }
+
+                p.style.display = 'block';
+                p.style.left = startX + 'px';
+                p.style.top = startY + 'px';
+
+                const duration = 600;
+                const startTime = performance.now();
+
+                function animate(time) {
+                    const elapsed = time - startTime;
+                    const progress = Math.min(elapsed / duration, 1);
+                    const ease = progress * (2 - progress);
+
+                    p.style.left = (startX + (endX - startX) * ease) + 'px';
+                    p.style.top = (startY + (endY - startY) * ease) + 'px';
+
+                    if (progress < 1) {
+                        requestAnimationFrame(animate);
+                    } else {
+                        p.remove();
+                        resolve();
+                    }
+                }
+                requestAnimationFrame(animate);
+            });
+        }
+
+        startBtn.addEventListener('click', loop);
+    </script>
+</body>
+</html>
